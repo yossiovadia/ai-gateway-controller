@@ -69,13 +69,18 @@ type Credential struct {
 }
 
 // Candidate is one routable capability instance.
+//
+// Credential is optional: the overlay consumer treats an absent credential as
+// "no reference" (validate_credential in praxis-ai descriptor.rs), and the
+// wire vocabulary cannot yet express every CRD auth type (see strategyFor),
+// so mislabeling would be a lie the digest happily hashes.
 type Candidate struct {
-	Cluster    string     `json:"cluster"`
-	Kind       string     `json:"kind"` // inference_model | mcp_tool
-	Name       string     `json:"name"`
-	Site       string     `json:"site"`
-	Fresh      bool       `json:"fresh"`
-	Credential Credential `json:"credential"`
+	Cluster    string      `json:"cluster"`
+	Kind       string      `json:"kind"` // inference_model | mcp_tool
+	Name       string      `json:"name"`
+	Site       string      `json:"site"`
+	Fresh      bool        `json:"fresh"`
+	Credential *Credential `json:"credential,omitempty"`
 }
 
 // Provenance records who rendered this envelope and from what source state.
@@ -175,21 +180,24 @@ func Render(routes *resolver.ResolvedRouteSet, scope Scope, prev Revision, opts 
 			if len(known) > 0 && !known[r.Cluster] {
 				return Envelope{}, fmt.Errorf("%w: %s (model %s)", ErrUnknownCluster, r.Cluster, r.Model)
 			}
-			candidates = append(candidates, Candidate{
+			cand := Candidate{
 				Cluster: r.Cluster,
 				Kind:    "inference_model",
 				Name:    r.Model,
 				Site:    scope.LocalSite,
 				Fresh:   true,
-				Credential: Credential{
-					Strategy: r.AuthType,
+			}
+			if strategy, ok := strategyFor(r.AuthType); ok {
+				cand.Credential = &Credential{
+					Strategy: strategy,
 					SecretRef: SecretRef{
 						Name:      r.SecretName,
 						Namespace: r.Namespace,
 						Key:       r.SecretKey,
 					},
-				},
-			})
+				}
+			}
+			candidates = append(candidates, cand)
 		}
 	}
 
@@ -233,6 +241,26 @@ func Render(routes *resolver.ResolvedRouteSet, scope Scope, prev Revision, opts 
 }
 
 // checkUniformWeights enforces the R1 guard for one model group.
+// strategyFor maps the CRD auth-type vocabulary (auth.type:
+// apikey|sigv4|oauth2) onto the overlay wire vocabulary. The praxis #540
+// consumer rejects every strategy except "bearer_token"
+// (validate_credential in praxis-ai filters/src/routing/descriptor.rs), and
+// none of the CRD types faithfully mean "bearer": an api key travels in a
+// provider-specific header (x-api-key, Authorization), sigv4 and oauth2 are
+// entirely different schemes. Emitting bearer_token for those would be a
+// wire-level lie the gateway's credential_inject filter would act on, so
+// unrepresentable types render no credential at all (accepted; routing
+// still works — the overlay credential is a reference, and the credential
+// injection config lives on the provider gateway). The mapping question is
+// an open §6 item for the interface freeze: either praxis widens the
+// strategy enum or the credential moves out of the envelope entirely.
+func strategyFor(authType string) (string, bool) {
+	if authType == "bearer_token" {
+		return "bearer_token", true
+	}
+	return "", false
+}
+
 func checkUniformWeights(m resolver.ModelRoutes) error {
 	if len(m.Routes) == 0 {
 		return nil // model renders no candidates; skips are the record

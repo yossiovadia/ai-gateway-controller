@@ -64,19 +64,48 @@ func TestRender_HappyPath(t *testing.T) {
 
 func TestRender_CredentialWireShapeExact(t *testing.T) {
 	// The consumer rejects unknown fields inside credential objects — the
-	// emitted shape must be exactly {strategy, secretRef{name,namespace,key}}.
-	set := routeSet(resolver.ModelRoutes{ModelRef: "ns1/m1", Routes: []resolver.Route{route("m1", "p1", 1)}})
+	// emitted shape must be exactly {strategy, secretRef{name,namespace,key}},
+	// and only bearer_token is wire-representable today (see strategyFor).
+	r := route("m1", "p1", 1)
+	r.AuthType = "bearer_token"
+	set := routeSet(resolver.ModelRoutes{ModelRef: "ns1/m1", Routes: []resolver.Route{r}})
 	env, err := Render(set, scope(), Revision{}, Options{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
+	}
+	if env.Overlay.Candidates[0].Credential == nil {
+		t.Fatal("bearer_token must render a credential reference")
 	}
 	raw, err := json.Marshal(env.Overlay.Candidates[0].Credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"strategy":"apikey","secretRef":{"name":"p1-key","namespace":"ns1","key":"api-key"}}`
+	want := `{"strategy":"bearer_token","secretRef":{"name":"p1-key","namespace":"ns1","key":"api-key"}}`
 	if string(raw) != want {
 		t.Errorf("credential JSON:\n got %s\nwant %s", raw, want)
+	}
+}
+
+func TestRender_CredentialOmittedForUnmappedAuth(t *testing.T) {
+	// apikey/sigv4/oauth2 have no faithful v1 wire strategy: the candidate
+	// must render with NO credential field (absent means "no reference" to
+	// praxis; a wrong strategy string would be rejected outright —
+	// "credential.strategy is unsupported", praxis-ai descriptor.rs).
+	for _, authType := range []string{"apikey", "sigv4", "oauth2"} {
+		r := route("m1", "p1", 1)
+		r.AuthType = authType
+		set := routeSet(resolver.ModelRoutes{ModelRef: "ns1/m1", Routes: []resolver.Route{r}})
+		env, err := Render(set, scope(), Revision{}, Options{})
+		if err != nil {
+			t.Fatalf("Render(%s): %v", authType, err)
+		}
+		if env.Overlay.Candidates[0].Credential != nil {
+			t.Errorf("%s: credential must be omitted, got %+v", authType, env.Overlay.Candidates[0].Credential)
+		}
+		raw, _ := json.Marshal(env.Overlay.Candidates[0])
+		if strings.Contains(string(raw), "credential") {
+			t.Errorf("%s: credential key must be absent from the wire: %s", authType, raw)
+		}
 	}
 }
 
@@ -195,8 +224,8 @@ func ov(candidates []Candidate, policy string) Overlay {
 }
 
 func TestComputeDigest_StableAndOrderSensitive(t *testing.T) {
-	c1 := Candidate{Cluster: "a", Kind: "inference_model", Name: "m", Site: "s", Fresh: true, Credential: Credential{Strategy: "apikey", SecretRef: SecretRef{Name: "n", Namespace: "ns", Key: "api-key"}}}
-	c2 := Candidate{Cluster: "b", Kind: "inference_model", Name: "m", Site: "s", Fresh: true, Credential: Credential{Strategy: "apikey", SecretRef: SecretRef{Name: "n", Namespace: "ns", Key: "api-key"}}}
+	c1 := Candidate{Cluster: "a", Kind: "inference_model", Name: "m", Site: "s", Fresh: true, Credential: &Credential{Strategy: "apikey", SecretRef: SecretRef{Name: "n", Namespace: "ns", Key: "api-key"}}}
+	c2 := Candidate{Cluster: "b", Kind: "inference_model", Name: "m", Site: "s", Fresh: true, Credential: &Credential{Strategy: "apikey", SecretRef: SecretRef{Name: "n", Namespace: "ns", Key: "api-key"}}}
 
 	d1a, _ := ComputeDigest(ov([]Candidate{c1}, ""))
 	d1b, _ := ComputeDigest(ov([]Candidate{c1}, ""))
@@ -251,7 +280,7 @@ func TestComputeDigest_KnownVectors(t *testing.T) {
 				Candidates: []Candidate{{
 					Cluster: "local-inference", Kind: "inference_model", Name: "llama-3",
 					Site: "site-a", Fresh: true,
-					Credential: Credential{Strategy: "apikey", SecretRef: SecretRef{Name: "llama-key", Namespace: "tenant-a", Key: "api-key"}},
+					Credential: &Credential{Strategy: "apikey", SecretRef: SecretRef{Name: "llama-key", Namespace: "tenant-a", Key: "api-key"}},
 				}},
 				SelectionPolicy: json.RawMessage(`{"mode":"random","groups":["g1","g2"]}`),
 			},
@@ -265,11 +294,11 @@ func TestComputeDigest_KnownVectors(t *testing.T) {
 					{
 						Cluster: "cls", Kind: "mcp_tool", Name: "tügel — 名称",
 						Site: "s", Fresh: false,
-						Credential: Credential{Strategy: "oauth2", SecretRef: SecretRef{Name: "n/a?b&c=d", Namespace: "", Key: ""}},
+						Credential: &Credential{Strategy: "oauth2", SecretRef: SecretRef{Name: "n/a?b&c=d", Namespace: "", Key: ""}},
 					},
 					{
 						Cluster: "", Kind: "", Name: "🚀", Site: "s2", Fresh: true,
-						Credential: Credential{Strategy: "", SecretRef: SecretRef{Name: "x", Namespace: "y", Key: "z"}},
+						Credential: &Credential{Strategy: "", SecretRef: SecretRef{Name: "x", Namespace: "y", Key: "z"}},
 					},
 				},
 				SelectionPolicy: json.RawMessage(`{"groups":["b","a"],"mode":"weighted","weights":{"a":10,"b":2}}`),
