@@ -76,8 +76,14 @@ cluster and cached images. All kubectl calls are pinned to
 
 ## M1 golden vectors
 
-The Rust-side fixtures live in praxis-ai at
-`tests/fixtures/overlay-contract/v1/` (`valid-minimal.json` carries a pinned
-digest, `abd5f485…`). Port them as table-driven cases in
-`pkg/envelope` so digest agreement is asserted on every CI run, not only when
-this kind e2e executes.
+Done: the Rust-side fixtures from praxis-ai
+`tests/fixtures/overlay-contract/v1/` (source commit
+`1ef8a53ee9f2fd33db40862d4c70180ec80b20a6`) are vendored under
+`pkg/envelope/testdata/overlay-contract/v1/` and driven by
+`pkg/envelope/golden_vectors_test.go` against
+`envelope.ComputeDigestFromWire` — digest agreement is now asserted on every
+CI run, not only when this kind e2e executes. The e2e keeps its distinct
+value: it proves the live consumer accepts what the live producer emits;
+the vectors pin the digest function itself against regressions, including
+raw-value semantics (unknown additive candidate fields hash, `generated_at`
+does not) and the legacy/envelope shape-detection hazard.

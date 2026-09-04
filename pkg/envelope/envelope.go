@@ -303,6 +303,55 @@ func ComputeDigest(overlay Overlay) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// ComputeDigestFromWire recomputes the semantic digest of a routing-overlay
+// wire document as the praxis consumer does — a port of compute_semantic_
+// digest in praxis-ai overlay.rs operating on the RAW parsed value, filtered
+// to candidates + local_site + network (+ selection_policy iff present).
+//
+// Unlike ComputeDigest it sees fields our structs do not model: unknown
+// additive candidate fields (stable_id, rank, ...) participate in the digest
+// praxis hashes, and overlay-level fields outside the four keys (e.g.
+// generated_at) do not. It is the independent verifier: audit and read-back
+// paths recompute digests over bytes they did not render, and the M1 golden
+// vectors (testdata/overlay-contract/v1, pinned from praxis fixtures) assert
+// this path agrees with the Rust consumer byte for byte.
+//
+// Shape detection mirrors praxis: a document with a schema_version field is
+// an envelope (digest computed over its overlay section); without one it is
+// a legacy bare overlay payload.
+func ComputeDigestFromWire(raw []byte) (string, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", fmt.Errorf("envelope: wire document is not a JSON object: %w", err)
+	}
+	overlay := doc
+	if _, isEnvelope := doc["schema_version"]; isEnvelope {
+		inner, ok := doc["overlay"]
+		if !ok {
+			return "", fmt.Errorf("envelope: envelope document has no overlay section")
+		}
+		if err := json.Unmarshal(inner, &overlay); err != nil {
+			return "", fmt.Errorf("envelope: overlay section is not a JSON object: %w", err)
+		}
+	}
+	filtered := make(map[string]json.RawMessage, 4)
+	for _, k := range []string{"candidates", "local_site", "network", "selection_policy"} {
+		if v, ok := overlay[k]; ok {
+			filtered[k] = v
+		}
+	}
+	payload, err := json.Marshal(filtered)
+	if err != nil {
+		return "", fmt.Errorf("envelope: marshal wire digest input: %w", err)
+	}
+	canon, err := jcs.Transform(payload)
+	if err != nil {
+		return "", fmt.Errorf("envelope: JCS canonicalize: %w", err)
+	}
+	sum := sha256.Sum256(canon)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // CheckRevisionTransition validates a candidate revision against the one
 // currently distributed (read from the ConfigMap annotation by the caller).
 // It enforces the monotonicity obligation that Render relies on:
