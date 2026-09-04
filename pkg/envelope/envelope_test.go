@@ -225,16 +225,19 @@ func TestComputeDigest_StableAndOrderSensitive(t *testing.T) {
 	}
 }
 
-// Cross-implementation digest vectors: each expected value was computed
-// independently (Python json.dumps(sort_keys, compact separators, no
-// escapes) → SHA-256) against the byte-identical JCS form. This is our
-// side of the R3 byte-compatibility contract — praxis recomputes these
-// digests in Rust (serde_json_canonicalizer), so agreement here plus the
-// praxis-side golden vectors at M1 gate the wire. Deliberately nasty
-// inputs: codepoints RFC 8785 treats specially (U+2028/U+2029 line
-// separators must stay unescaped raw UTF-8), non-BMP emoji, non-ASCII
-// keys are NOT exercised (UTF-16 code-unit key order only bites there —
-// M1 vector from praxis fixtures will cover it), empty vs absent fields.
+// Digest regression vectors: each expected value was computed with a
+// second implementation (Python json.dumps with sort_keys, compact
+// separators, ensure_ascii=False). That reference is RFC-8785-equivalent
+// ONLY for these payload shapes: ASCII object keys (there code-point and
+// UTF-16 code-unit ordering coincide), integer-only numbers, no exotic
+// escapes. So these vectors pin our Go digest path against regressions
+// and catch gross JCS bugs — they do NOT establish byte-compatibility
+// with the Rust consumer (serde_json_canonicalizer in praxis); that gate
+// is the M1 golden vectors extracted from praxis fixtures (port plan R3).
+// Non-ASCII *keys* are deliberately absent: the two implementations can
+// order them differently, so they are exactly the case this pair cannot
+// witness. U+2028/U+2029, non-BMP emoji, and empty-vs-absent fields are
+// present because both sides demonstrably agree on them.
 func TestComputeDigest_KnownVectors(t *testing.T) {
 	cases := []struct {
 		name    string

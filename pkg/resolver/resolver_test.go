@@ -308,6 +308,27 @@ func TestResolvePath_ExplicitModelKeyPrecedence(t *testing.T) {
 	}
 }
 
+// Documented deviation from IPP: a config VALUE containing another key's
+// placeholder is order-sensitive. IPP iterates its config map in Go's
+// randomized order, so its outcome for this input coin-flips between
+// "/v1/xzy/z" (a substituted first) and a PathUnresolved error on {b}
+// (b first). We substitute in sorted key order, so the outcome is fixed.
+// On configs whose values contain no placeholder tokens — the real-world
+// case — sorted order produces byte-identical output to IPP.
+func TestResolvePath_ChainedPlaceholderIsDeterministic(t *testing.T) {
+	const want = "/v1/xzy/z"
+	for i := 0; i < 50; i++ { // Go randomizes map iteration; 50 runs
+		// would catch any regression to randomized order.
+		got, err := resolvePath("/v1/{a}/{b}", "t", map[string]string{"a": "x{b}y", "b": "z"})
+		if err != nil {
+			t.Fatalf("run %d: want deterministic success, got error %v", i, err)
+		}
+		if got != want {
+			t.Fatalf("run %d: got %q, want %q (sorted substitution)", i, got, want)
+		}
+	}
+}
+
 // IPP parity quirks, preserved deliberately so IPP's table tests port
 // without edits: `{}` (empty key) and a stray `{` with no closing `}` do
 // not match the placeholder regex and pass through unresolved. Tightening

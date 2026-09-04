@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	v1alpha1 "github.com/opendatahub-io/ai-gateway-controller/api/inference/v1alpha1"
@@ -216,19 +217,34 @@ func mergeConfig(provCfg, refCfg map[string]string) map[string]string {
 // placeholderRe matches {key} with a non-empty key, mirroring IPP.
 var placeholderRe = regexp.MustCompile(`\{([^}]+)\}`)
 
-// resolvePath is the port of IPP pkg/controller/common/path.go ResolvePath,
-// semantics matched verbatim: every merged-config key substitutes first (so
-// an explicit "model" config key takes precedence), then the reserved
-// {model} placeholder falls back to targetModel; anything left over is an
-// error listing ALL unresolved keys (IPP #368 — reconcile-time, never
-// request-time).
+// resolvePath is the port of IPP pkg/controller/common/path.go ResolvePath:
+// every merged-config key substitutes first (so an explicit "model" config
+// key takes precedence), then the reserved {model} placeholder falls back
+// to targetModel; anything left over is an error listing ALL unresolved
+// keys (IPP #368 — reconcile-time, never request-time). One deliberate
+// deviation from verbatim: config keys substitute in sorted order, where
+// IPP's map iteration is randomized — see the comment in the body and the
+// ChainedPlaceholder parity test.
 func resolvePath(tmpl, targetModel string, cfg map[string]string) (string, error) {
 	if tmpl == "" || !strings.Contains(tmpl, "{") {
 		return tmpl, nil
 	}
+	// Config substitutes first (IPP semantics), in SORTED key order. IPP
+	// iterates its config map in Go's randomized order, so a config value
+	// containing another key's placeholder (cfg{"a":"x{b}y","b":"z"} on
+	// "/{a}/{b}") makes IPP's result — success or PathUnresolved error —
+	// coin-flip between reconciles. Nondeterminism is a defect, not a
+	// quirk to port: sorted order is deterministic and identical to IPP
+	// on every config whose values contain no placeholder tokens (the
+	// real-world case). Documented deviation, see the parity test.
+	keys := make([]string, 0, len(cfg))
+	for k := range cfg {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	path := tmpl
-	for k, v := range cfg {
-		path = strings.ReplaceAll(path, "{"+k+"}", v)
+	for _, k := range keys {
+		path = strings.ReplaceAll(path, "{"+k+"}", cfg[k])
 	}
 	path = strings.ReplaceAll(path, "{model}", targetModel)
 	if matches := placeholderRe.FindAllStringSubmatch(path, -1); len(matches) > 0 {
